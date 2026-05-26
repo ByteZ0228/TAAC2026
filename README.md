@@ -1,9 +1,10 @@
 # TAAC-2026 HyFormer Baseline
 
-这个仓库公开的是我们一版最终整理出来的 HyFormer 训练代码。这里主要记录两部分内容：
-
+这个仓库公开的是我们一版最终整理出来的 TAAC2026 代码。这里主要记录两部分内容：
 1. 当前公开代码相对原始 baseline 的实际改动。
 2. 过去实验中验证过有效的改动方向。
+
+我们最终的成绩是0.830。除了已经写在这里的思路，我们另外也尝试过很多其他的思路了，不过很多很合理的方向或者开源的上分思路套到我们当前的模型上是无效的，加上比赛的测试波动也比较大，小改动不好做消融，因此还有许多改动无从知道是否有效。我们队伍在很长一段时间内都在纠结应该保存多少token，我们在20token的方案上做了将近2个星期都卡在0.829无法提升。此时发现前排token数几乎都是8个左右，重新制定策略后很多之前验证有效的策略都无法使用了，比如说fid的key的统计ueie交叉，action_type，rankloss，SENet等等在我们最终的改动上都没有办法取得收益，也没有充足的时间进行进一步尝试。不过第一次打推荐比赛，能走到这一步已经很开心了，学习到了很多知识也看了不少论文，比成绩的收获更重要。
 
 ## 当前公开代码的主要改动
 
@@ -80,6 +81,34 @@
 - 验证时使用 EMA 权重
 - 选择 best model 时也使用 EMA 权重
 
+### 5. query 生成不是简单 mean pooling
+
+原始文档版 baseline 里，query 生成更接近“对每个序列做摘要，再生成 query”。当前公开代码里，这一步已经不是简单 mean pooling，而是更接近 DIN 风格的 target-aware weighted pooling：
+
+- 先对 item tokens 做平均，得到 `item context`
+- 对每个 sequence token，用
+  - `seq`
+  - `item_ctx`
+  - `seq * item_ctx`
+  - `seq - item_ctx`
+  这几项拼接后打分
+- 对历史序列位置做 softmax 加权
+- 再做加权求和，得到当前 domain 的 sequence summary
+
+也就是说，这里已经从“无目标的均值摘要”变成了“item-aware 的序列加权摘要”。
+
+### 6. block 里有 NS-conditioned domain gate
+
+在每个 `MultiSeqHyFormerBlock` 开头，当前代码会先根据各个序列 domain 的上下文，对 NS tokens 做一次动态调制：
+
+- 先对 NS tokens 做全局摘要
+- 再分别对每个 domain 的序列做摘要
+- 根据 `ns_global` 和 `domain_ctx` 计算每个 domain 的权重
+- 得到一个融合后的 `domain context`
+- 再把这个 context 投回 NS tokens
+
+这个改动的作用是让 NS 侧在进入后续 sequence evolution / query decoding 之前，先感知当前样本里哪些 domain 更重要。
+
 ## 过去我们尝试过且验证有效的改动
 
 下面这些是过去实验中验证过有效的方向，不一定全部包含在当前公开仓库里。
@@ -124,22 +153,18 @@
 - 对四个长序列 domain，增加 query 数通常是正向改动
 - 本质上是增加从序列里读取信息的视角
 
-### 8. user-item cross token 是有效方向
+### 8. DIN 风格 target-aware pooling 是有效方向
+
+- 用 item context 对历史序列位置做加权通常优于简单 mean pooling
+- 本质上是让 query 生成阶段更早感知 target item
+
+### 9. user-item cross token 是有效方向
 
 - 在 NS 侧显式加入 user-item 交互 token 是有效的
 - 属于低成本增强 matching 信号的方法
 
-### 9. valid finetune / 后处理式训练策略有收益
+### 10. domain gate 是有效方向
 
-- 在 best checkpoint 基础上再做 valid finetune 是有效方向
-- 更适合最终冲榜，不适合作为普通离线验证结论
+- 先根据各个 domain 的上下文，动态调制 NS tokens 是有效方向
+- 本质上是在 block 内增加一次跨 domain 的轻量条件路由
 
-## 当前公开仓库没有完整带出的方向
-
-下面这些方向我们验证过有效，但当前公开仓库没有完整保留：
-
-- `action_type` 调制 sequence token
-- time-aware stat tokens
-- user-item cross token
-- 更大的 NS token 预算重分配
-- valid finetune
